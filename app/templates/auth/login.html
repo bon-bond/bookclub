@@ -16,8 +16,13 @@
     </div>
     {% endif %}
 
+    {% if pocketid_enabled or google_enabled %}
+    {% if pocketid_enabled %}
+    {{ ui.pocketid_button("/auth/pocketid/login") }}
+    {% endif %}
     {% if google_enabled %}
     {{ ui.google_button("/auth/google/login") }}
+    {% endif %}
     {{ ui.or_divider() }}
     {% endif %}
 

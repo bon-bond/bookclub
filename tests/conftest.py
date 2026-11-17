@@ -27,6 +27,32 @@ os.environ["SECRET_KEY"] = "test-secret-key-not-for-production"
 for _var in ("GITHUB_TOKEN", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "SOURCE_URL"):
     os.environ.pop(_var, None)
 
+# Same reason: a stray real Pocket ID client in a developer's shell would make
+# the ordinary suite reach out to it. The round trip is exercised separately,
+# against a local stand-in, and only when asked for.
+for _var in ("POCKETID_CLIENT_ID", "POCKETID_CLIENT_SECRET", "POCKETID_BASE_URL"):
+    os.environ.pop(_var, None)
+
+POCKETID_E2E = os.environ.get("POCKETID_E2E") == "1"
+_MOCK_IDP = None
+if POCKETID_E2E:
+    # `app.pocketid_oauth` reads its configuration at import time and registers
+    # the client immediately, so the stand-in has to be listening *before*
+    # `app.main` is imported below. Started here, stopped by the session fixture
+    # further down. The ordinary suite imports nothing and opens no socket.
+    import sys
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from pocketid_mock import MockIdP
+
+    _MOCK_IDP = MockIdP(client_id="coverbound-test").start()
+    os.environ["POCKETID_CLIENT_ID"] = _MOCK_IDP.client_id
+    os.environ["POCKETID_BASE_URL"] = _MOCK_IDP.base_url
+    # The mock's default redirect URI is the TestClient address, so the app has
+    # to be told the same thing. Overriding a real PUBLIC_BASE_URL is deliberate:
+    # the callback must match what the stand-in was configured with.
+    os.environ["PUBLIC_BASE_URL"] = "http://testserver"
+
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -107,6 +133,33 @@ def client():
     """Anonymous client. Redirects are not followed — most assertions here are
     about *where* a route sends you, which following would hide."""
     return TestClient(app, follow_redirects=False)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def stop_pocketid_mock():
+    """Stop the stand-in IdP when the run ends.
+
+    The mock is started at module scope (above) so it is listening before the
+    app registers its OAuth client; stopping it at interpreter exit leaves a
+    live server thread behind.
+    """
+    yield
+    if _MOCK_IDP is not None:
+        _MOCK_IDP.stop()
+
+
+@pytest.fixture(autouse=True)
+def pocketid_mock():
+    """The stand-in IdP, back to its defaults before every test.
+
+    Only the claims and the issued-code ledger need resetting — the app reads
+    its provider configuration at import time, and a test that rewrites a claim
+    would otherwise hand the next test a surprise.
+    """
+    if _MOCK_IDP is None:
+        return None
+    _MOCK_IDP.reset()
+    return _MOCK_IDP
 
 
 @pytest.fixture

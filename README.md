@@ -186,6 +186,7 @@ template; `make init` copies it and fills in a `SECRET_KEY` for you.
 | `DEBUG` | Debug mode. Leave `false` anywhere reachable from a network |
 | `GITHUB_TOKEN` / `GITHUB_REPO` | Optional: mirror in-app feedback to GitHub issues |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Optional: enable Google sign-in |
+| `POCKETID_CLIENT_ID` / `POCKETID_BASE_URL` | Optional: enable Pocket ID sign-in (self-hosted OIDC). `POCKETID_CLIENT_SECRET` only for confidential clients |
 | `PUBLIC_BASE_URL` | The address users type. Required behind a reverse proxy |
 | `SOURCE_URL` | Where this deployment's source lives, linked from the footer. Set it if you run modified code |
 
@@ -275,6 +276,38 @@ Notes on how accounts are matched:
   log in with your account secret first and use **Connect** in settings.
 - An account created through Google has no account secret. Disconnecting Google
   generates one and shows it to you once, rather than locking you out.
+
+### Pocket ID sign-in (optional)
+
+The same flow with a self-hosted provider: [Pocket ID](https://github.com/pocket-id/pocket-id)
+instead of Google, for a deployment that wants SSO without a Google Cloud
+project. When `POCKETID_CLIENT_ID` and `POCKETID_BASE_URL` are both set,
+"Continue with Pocket ID" appears on the login and register screens, and
+existing accounts can connect it from **Account settings → Security**.
+
+1. In Pocket ID, create an **OIDC client**.
+2. Add a redirect URI — your public address plus `/auth/pocketid/callback`:
+
+   ```
+   https://coverbound.club/auth/pocketid/callback
+   ```
+
+3. Put the values in `coverbound.env` and restart:
+
+   ```
+   POCKETID_CLIENT_ID=<uuid>
+   POCKETID_BASE_URL=https://id.example.com
+   PUBLIC_BASE_URL=https://coverbound.club
+   ```
+
+`POCKETID_CLIENT_SECRET` is optional. Pocket ID issues one for confidential
+clients, but a public client with PKCE works and is the simpler setup — leave
+it unset unless you deliberately created a confidential client.
+
+Account matching follows the Google rules exactly: keyed on Pocket ID's
+**subject identifier** rather than email, a first sign-in creates a new account
+and asks for a username, and an account created this way has no account secret —
+disconnecting generates one rather than locking you out.
 
 ### A note on sessions
 

@@ -151,12 +151,27 @@
   </svg>
 {% endmacro %}
 
-{#
-  Neutral-surface button that starts the Google flow. `method` is "get" for
-  sign-in and "post" for linking an existing account, so a state-changing link
-  is never a bare navigation.
-#}
+{# Pocket ID's mark: the rounded yellow tile and "P" from its logo. #}
+{% macro pocketid_g(size=18) %}
+  <svg width="{{ size }}" height="{{ size }}" viewBox="0 0 24 24" aria-hidden="true" focusable="false" class="shrink-0">
+    <rect x="1.5" y="1.5" width="21" height="21" rx="6.5" fill="#F6C744"/>
+    <path d="M8.2 17.4V6.6h4.1a3.15 3.15 0 0 1 0 6.3H8.2" fill="none" stroke="#1c1c1c" stroke-width="2.1" stroke-linecap="round"/>
+  </svg>
+{% endmacro %}
+
+{% macro pocketid_button(action, label="Continue with Pocket ID", method="get") %}
+  <form method="{{ method }}" action="{{ action }}" class="contents">
+    <button type="submit"
+            class="cb-tap-44 w-full flex items-center justify-center gap-[10px] px-5 py-[13px] rounded-xl border border-line bg-surface text-ink font-semibold text-[15px] cursor-pointer transition-colors hover:bg-surface-2">
+      {{ pocketid_g() }}<span>{{ label }}</span>
+    </button>
+  </form>
+{% endmacro %}
+
 {% macro google_button(action, label="Continue with Google", method="get") %}
+  {# Neutral-surface button that starts the Google flow. `method` is "get" for
+     sign-in and "post" for linking an existing account, so a state-changing
+     link is never a bare navigation. #}
   <form method="{{ method }}" action="{{ action }}" class="contents">
     <button type="submit"
             class="cb-tap-44 w-full flex items-center justify-center gap-[10px] px-5 py-[13px] rounded-xl border border-line bg-surface text-ink font-semibold text-[15px] cursor-pointer transition-colors hover:bg-surface-2">

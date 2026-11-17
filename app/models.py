@@ -20,6 +20,9 @@ class User(Base):
     # the join key — email is *not*, because people change their Google address
     # and a recycled address must never inherit someone else's clubs.
     google_sub = Column(String(64), unique=True, nullable=True, index=True)
+    # Pocket ID sign-in (self-hosted OIDC). Same rule as Google: the provider's
+    # subject id is the join key, never the address.
+    pocketid_sub = Column(String(64), unique=True, nullable=True, index=True)
     email = Column(String(320), nullable=True)
     email_verified = Column(Boolean, default=False)
     avatar_url = Column(String(500), nullable=True)

@@ -15,6 +15,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from .google_oauth import google_enabled
+from .pocketid_oauth import pocketid_enabled
 from .models import Book, Club, Member, User
 from .version import __version__
 
@@ -323,6 +324,9 @@ def base_context(
         # Templates hide every Google affordance when the deployment has no
         # OAuth credentials, so a self-hoster never sees a button that 404s.
         "google_enabled": google_enabled(),
+        # Same contract: hidden unless this deployment configured a Pocket ID
+        # OIDC client, so a self-hoster never sees a button that 404s.
+        "pocketid_enabled": pocketid_enabled(),
         "in_club_section": screen in CLUB_SCREENS,
         "nav_club": club,
         "switcher_clubs": switcher_clubs,

@@ -19,6 +19,7 @@ from ..dependencies import (
     require_current_user,
 )
 from ..google_oauth import google_enabled, oauth, redirect_uri, safe_next
+from ..pocketid_oauth import pocketid_enabled, pocketid_redirect_uri
 from ..models import User
 from ..templating import templates, base_context
 
@@ -138,6 +139,21 @@ async def login_form(request: Request, db: Session = Depends(get_db)):
     )
 
 
+def _external_signin_name(user) -> str:
+    """Which provider an account that has no account secret signs in with.
+
+    Only used for the login error message, so it can name the provider instead
+    of leaving the user to guess why their secret is rejected.
+    """
+    if user is None:
+        return ""
+    if getattr(user, "google_sub", None):
+        return "Google"
+    if getattr(user, "pocketid_sub", None):
+        return "Pocket ID"
+    return "an external provider"
+
+
 @router.post("/login")
 async def login(
     request: Request,
@@ -165,7 +181,7 @@ async def login(
                 **base_context(request, db, None),
                 "title": "Login",
                 "error": (
-                    "This account signs in with Google."
+                    f"This account signs in with {_external_signin_name(user)}."
                     if user is not None and not user.account_secret
                     else "Invalid username or account secret."
                 ),
@@ -435,4 +451,230 @@ async def google_unlink(request: Request, db: Session = Depends(get_db)):
     request.session['new_account_secret'] = secret
     request.session['new_account_username'] = user.username
     request.session['new_account_heading'] = "Google disconnected"
+    return RedirectResponse(url="/auth/register/success", status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# Pocket ID sign-in
+# ---------------------------------------------------------------------------
+
+def _require_pocketid_configured():
+    if not pocketid_enabled():
+        raise HTTPException(status_code=404, detail="Pocket ID sign-in is not configured")
+
+
+def _suggest_pocketid_username(claims: dict, db: Session) -> str:
+    """A free username derived from the Pocket ID account, for the picker to prefill."""
+    raw = (claims.get("preferred_username") or claims.get("name") or "").strip()
+    base = re.sub(r"[^a-zA-Z0-9_]", "", raw)[:30]
+    if not base:
+        base = re.sub(r"[^a-zA-Z0-9_]", "", (claims.get("email") or "").split("@")[0])[:30]
+    base = base or "reader"
+    while len(base) < 3:
+        base += "0"
+    candidate, n = base, 1
+    while db.query(User).filter(User.username == candidate).first():
+        suffix = str(n)
+        candidate = base[:30 - len(suffix)] + suffix
+        n += 1
+    return candidate
+
+
+@router.get("/pocketid/login")
+async def pocketid_login(request: Request, next: str = "/"):
+    _require_pocketid_configured()
+    request.session["pocketid_intent"] = "login"
+    request.session["pocketid_next"] = safe_next(next)
+    return await oauth.pocketid.authorize_redirect(request, pocketid_redirect_uri(request))
+
+
+@router.post("/pocketid/link")
+async def pocketid_link_start(request: Request, db: Session = Depends(get_db)):
+    _require_pocketid_configured()
+    user = require_current_user(request, db)
+    request.session["pocketid_intent"] = "link"
+    request.session["pocketid_link_uid"] = user.id
+    request.session["pocketid_next"] = "/profile/settings"
+    return await oauth.pocketid.authorize_redirect(request, pocketid_redirect_uri(request))
+
+
+@router.get("/pocketid/callback", name="pocketid_callback")
+async def pocketid_callback(request: Request, db: Session = Depends(get_db)):
+    _require_pocketid_configured()
+
+    intent = request.session.pop("pocketid_intent", "login")
+    link_uid = request.session.pop("pocketid_link_uid", None)
+    destination = safe_next(request.session.pop("pocketid_next", None))
+
+    try:
+        token = await oauth.pocketid.authorize_access_token(request)
+    except OAuthError as exc:
+        logger.warning(
+            "Pocket ID callback rejected: error=%s description=%s host=%s "
+            "redirect_uri=%s session_keys=%s",
+            exc.error, getattr(exc, "description", None), request.headers.get("host"),
+            pocketid_redirect_uri(request), sorted(request.session.keys()),
+        )
+        return _pocketid_error(request, db, f"Pocket ID sign-in failed: {exc.error}")
+
+    claims = token.get("userinfo") or {}
+    sub = claims.get("sub")
+    if not sub:
+        return _pocketid_error(request, db, "Pocket ID did not return an account identifier.")
+
+    verified = bool(claims.get("email_verified"))
+    email = claims.get("email") if verified else None
+    name = (claims.get("name") or claims.get("preferred_username") or "").strip() or None
+
+    existing = db.query(User).filter(User.pocketid_sub == sub).first()
+
+    if intent == "link":
+        user = db.query(User).filter(User.id == link_uid).first() if link_uid else None
+        if not user:
+            return _pocketid_error(request, db, "Your session expired before linking finished.")
+        if existing and existing.id != user.id:
+            return _pocketid_error(
+                request, db,
+                f"That Pocket ID account is already connected to “{existing.username}”."
+            )
+        user.pocketid_sub = sub
+        user.email = email
+        user.email_verified = verified
+        user.avatar_url = claims.get("picture")
+        if name and not user.display_name:
+            user.display_name = name
+        db.commit()
+        return RedirectResponse(url=destination or "/profile/settings", status_code=303)
+
+    if existing:
+        existing.email = email
+        existing.email_verified = verified
+        existing.avatar_url = claims.get("picture")
+        db.commit()
+        login_user(request, existing)
+        return RedirectResponse(url=destination, status_code=303)
+
+    request.session["pending_pocketid"] = {
+        "sub": sub,
+        "email": email,
+        "email_verified": verified,
+        "name": name,
+        "preferred_username": claims.get("preferred_username"),
+        "picture": claims.get("picture"),
+        "next": destination,
+    }
+    return RedirectResponse(url="/auth/pocketid/finish", status_code=303)
+
+
+def _pocketid_error(request: Request, db: Session, message: str):
+    return templates.TemplateResponse(
+        request, "auth/login.html",
+        {
+            **base_context(request, db, get_current_user(request, db)),
+            "title": "Login",
+            "error": message,
+        },
+        status_code=400,
+    )
+
+
+@router.get("/pocketid/finish", response_class=HTMLResponse)
+async def pocketid_finish_form(request: Request, db: Session = Depends(get_db)):
+    _require_pocketid_configured()
+    pending = request.session.get("pending_pocketid")
+    if not pending:
+        return RedirectResponse(url="/auth/login", status_code=303)
+
+    duplicate = None
+    if pending.get("email"):
+        duplicate = db.query(User).filter(
+            User.email == pending["email"], User.pocketid_sub.is_(None)
+        ).first()
+
+    return templates.TemplateResponse(
+        request, "auth/pocketid_finish.html",
+        {
+            **base_context(request, db, None),
+            "title": "Choose a username",
+            "pocketid_email": pending.get("email"),
+            "pocketid_name": pending.get("name"),
+            "suggested": _suggest_pocketid_username(pending, db),
+            "duplicate_username": duplicate.username if duplicate else None,
+        },
+    )
+
+
+@router.post("/pocketid/finish")
+async def pocketid_finish(
+    request: Request,
+    username: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    _require_pocketid_configured()
+    pending = request.session.get("pending_pocketid")
+    if not pending:
+        return RedirectResponse(url="/auth/login", status_code=303)
+
+    def again(error: str, status: int = 400):
+        return templates.TemplateResponse(
+            request, "auth/pocketid_finish.html",
+            {
+                **base_context(request, db, None),
+                "title": "Choose a username",
+                "pocketid_email": pending.get("email"),
+                "pocketid_name": pending.get("name"),
+                "suggested": username,
+                "error": error,
+            },
+            status_code=status,
+        )
+
+    username = username.strip()
+    if not USERNAME_RE.match(username):
+        return again("Username must be 3–30 characters: letters, numbers, and underscores only.")
+    if db.query(User).filter(User.username == username).first():
+        return again("That username is already taken. Please choose another.")
+    if db.query(User).filter(User.pocketid_sub == pending["sub"]).first():
+        return again("That Pocket ID account has already been used to sign up.", status=409)
+
+    user = User(
+        username=username,
+        account_secret=None,  # Pocket ID is this account's only credential.
+        pocketid_sub=pending["sub"],
+        email=pending.get("email"),
+        email_verified=bool(pending.get("email_verified")),
+        avatar_url=pending.get("picture"),
+        display_name=(pending.get("name") or "").strip() or None,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    destination = safe_next(pending.get("next"))
+    login_user(request, user)
+    return RedirectResponse(url=destination, status_code=303)
+
+
+@router.post("/pocketid/unlink")
+async def pocketid_unlink(request: Request, db: Session = Depends(get_db)):
+    user = require_current_user(request, db)
+    if not user.pocketid_sub:
+        return RedirectResponse(url="/profile/settings", status_code=303)
+
+    user.pocketid_sub = None
+    user.email = None
+    user.email_verified = False
+    user.avatar_url = None
+
+    if user.account_secret or user.google_sub:
+        db.commit()
+        return RedirectResponse(url="/profile/settings", status_code=303)
+
+    secret = secrets.token_urlsafe(36)
+    user.account_secret = secret
+    db.commit()
+
+    request.session["new_account_secret"] = secret
+    request.session["new_account_username"] = user.username
+    request.session["new_account_heading"] = "Pocket ID disconnected"
     return RedirectResponse(url="/auth/register/success", status_code=303)

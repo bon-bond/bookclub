@@ -117,6 +117,39 @@
       </h2>
       <p class="cb-help !mt-0">How you sign in to Coverbound.</p>
 
+      {% if pocketid_enabled %}
+      <div class="mt-[14px] border border-line rounded-xl p-[15px] bg-paper flex items-center justify-between gap-3 flex-wrap">
+        <span class="flex items-center gap-3 min-w-0">
+          {{ ui.pocketid_g(22) }}
+          <span class="min-w-0">
+            <span class="block text-[14px] font-semibold text-ink">Pocket ID</span>
+            <span class="block text-[13px] text-ink-soft truncate">
+              {%- if current_user.pocketid_sub -%}
+                Connected{% if current_user.email %} · {{ current_user.email }}{% endif %}
+              {%- else -%}
+                Not connected
+              {%- endif -%}
+            </span>
+          </span>
+        </span>
+        {% if current_user.pocketid_sub %}
+        <form method="POST" action="/auth/pocketid/unlink" class="shrink-0">
+          <button type="submit" class="cb-btn-quiet !text-[13px] cb-tap-44">Disconnect</button>
+        </form>
+        {% else %}
+        <form method="POST" action="/auth/pocketid/link" class="shrink-0">
+          <button type="submit" class="cb-btn-primary !px-[15px] !py-[8px] !text-[13px] cb-tap-44">Connect</button>
+        </form>
+        {% endif %}
+      </div>
+      {% if current_user.pocketid_sub and not current_user.account_secret and not current_user.google_sub %}
+      <p class="cb-help">
+        Pocket ID is currently the only way into this account. Disconnecting it will
+        generate an account secret and show it to you once, so you don't lose access.
+      </p>
+      {% endif %}
+      {% endif %}
+
       {% if google_enabled %}
       <div class="mt-[14px] border border-line rounded-xl p-[15px] bg-paper flex items-center justify-between gap-3 flex-wrap">
         <span class="flex items-center gap-3 min-w-0">
@@ -142,7 +175,7 @@
         </form>
         {% endif %}
       </div>
-      {% if current_user.google_sub and not current_user.account_secret %}
+      {% if current_user.google_sub and not current_user.account_secret and not current_user.pocketid_sub %}
       <p class="cb-help">
         Google is currently the only way into this account. Disconnecting it will
         generate an account secret and show it to you once, so you don't lose access.
@@ -174,8 +207,8 @@
       </div>
       {% else %}
       <p class="cb-help mt-[18px]">
-        This account has no account secret — Google sign-in is the only way in.
-        Disconnecting Google above will issue one.
+        This account has no account secret — an external provider is the only way in.
+        Disconnecting that provider above will issue one.
       </p>
       {% endif %}
     </section>
@@ -229,7 +262,7 @@
     const shown = document.getElementById('secret-shown');
     const reveal = document.getElementById('reveal-secret');
     const hide = document.getElementById('hide-secret');
-    // Absent on accounts that sign in with Google and have no secret to reveal.
+    // Absent on accounts that sign in with an external provider and have no secret to reveal.
     if (!hidden || !shown || !reveal || !hide) return;
     reveal.addEventListener('click', () => {
       hidden.hidden = true; shown.hidden = false;
