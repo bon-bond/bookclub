@@ -21,6 +21,7 @@ validates — issuer, audience, signature, expiry, nonce, PKCE — is real.
 import base64
 import hashlib
 import json
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -275,6 +276,17 @@ class _ProviderHandler(BaseHTTPRequestHandler):
         mock = self.mock
         if urlparse(self.path).path != "/token":
             return _respond(self, 404, {"error": "not_found"})
+        if mock.token_fault == "hang_up":
+            # Answer nothing at all and drop the connection. That is what a
+            # crashed, still-booting, or mis-addressed Pocket ID looks like from
+            # the app's side — an httpx transport error, not an OAuth error.
+            self.close_connection = True
+            try:
+                self.connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            self.connection.close()
+            return
         length = int(self.headers.get("Content-Length") or 0)
         form = parse_qs(self.rfile.read(length).decode())
         return mock.handle_token(self, form)

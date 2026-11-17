@@ -5,9 +5,11 @@ import logging
 import re
 import secrets
 
+import httpx
 from authlib.integrations.starlette_client import OAuthError
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..database import get_db
@@ -516,6 +518,22 @@ async def pocketid_callback(request: Request, db: Session = Depends(get_db)):
             pocketid_redirect_uri(request), sorted(request.session.keys()),
         )
         return _pocketid_error(request, db, f"Pocket ID sign-in failed: {exc.error}")
+    except httpx.HTTPError as exc:
+        # A provider that is down, restarting, or on the wrong address fails
+        # the token exchange before any OAuth error exists: `OAuthError` covers
+        # only the protocol-level "the provider said no" case. Left unhandled a
+        # transport failure escapes as a 500, and the likeliest moment for it is
+        # the very first sign-in after a deployment — the one that tells the
+        # operator the integration is broken.
+        logger.warning(
+            "Pocket ID token exchange failed: type=%s host=%s error=%s",
+            type(exc).__name__, request.headers.get("host"), exc,
+        )
+        return _pocketid_error(
+            request, db,
+            "Could not reach Pocket ID to finish sign-in. Check that "
+            "POCKETID_BASE_URL is correct and that Pocket ID is running.",
+        )
 
     claims = token.get("userinfo") or {}
     sub = claims.get("sub")
@@ -646,8 +664,19 @@ async def pocketid_finish(
         avatar_url=pending.get("picture"),
         display_name=(pending.get("name") or "").strip() or None,
     )
-    db.add(user)
-    db.commit()
+    try:
+        db.add(user)
+        db.commit()
+    except IntegrityError:
+        # The checks above and the commit are not atomic, so a double submit (a
+        # double click on "Create account") or two tabs finishing the same
+        # Pocket ID at once can both pass the pre-checks and race to the same
+        # unique index. Without this the loser surfaces as a 500; instead tell
+        # them which of the two collisions actually happened.
+        db.rollback()
+        if db.query(User).filter(User.pocketid_sub == pending["sub"]).first():
+            return again("That Pocket ID account has already been used to sign up.", status=409)
+        return again("That username is already taken. Please choose another.")
     db.refresh(user)
 
     destination = safe_next(pending.get("next"))

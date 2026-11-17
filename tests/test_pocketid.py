@@ -210,6 +210,34 @@ def test_the_picker_rejects_a_taken_username(client, pocketid_mock, make_user):
     assert "already taken" in response.text
 
 
+def test_a_losing_race_to_the_unique_index_is_a_message_not_a_500(
+    client, pocketid_mock
+):
+    # The pre-checks and the commit are not atomic: two requests that both pass
+    # them can still collide on the unique index. The competing row is added at
+    # flush time — after the check, before the index is enforced — which is the
+    # window a double-clicked "Create account" actually opens. The loser has to
+    # land on a message, not a 500.
+    from sqlalchemy import event
+    from app.database import SessionLocal
+    from app.models import User
+
+    def steal_the_sub(session, flush_context, instances):
+        session.add(
+            User(username="race-winner", account_secret="x", pocketid_sub="pid-0001")
+        )
+
+    event.listen(SessionLocal, "before_flush", steal_the_sub)
+    try:
+        _round_trip(client, pocketid_mock)
+        response = client.post(FINISH, data={"username": "reader1"})
+    finally:
+        event.remove(SessionLocal, "before_flush", steal_the_sub)
+
+    assert response.status_code == 400
+    assert "already taken" in response.text
+
+
 def test_the_picker_warns_when_the_address_belongs_to_an_existing_account(
     client, pocketid_mock, make_user
 ):
@@ -255,6 +283,19 @@ def test_a_token_endpoint_failure_is_surfaced_rather_than_swallowed(
     response = _round_trip(client, pocketid_mock)
     assert response.status_code == 400
     assert "invalid_grant" in response.text
+
+
+def test_a_provider_that_never_answers_is_reported_not_raised(
+    client, pocketid_mock
+):
+    # The other failure mode: nothing comes back at all. A provider that is down,
+    # still booting, or on the wrong address fails before any OAuth error exists,
+    # so the handler has to catch the transport error as well — otherwise the
+    # first sign-in after a deployment is a 500 with no hint about the cause.
+    pocketid_mock.token_fault = "hang_up"
+    response = _round_trip(client, pocketid_mock)
+    assert response.status_code == 400
+    assert "Could not reach Pocket ID" in response.text
 
 
 def test_a_code_that_was_already_spent_is_refused(client, pocketid_mock):

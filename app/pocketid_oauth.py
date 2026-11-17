@@ -17,9 +17,8 @@ import os
 
 from fastapi import Request
 
-# One Authlib registry for the whole app; `safe_next` is the same host guard
-# both providers need, so it lives beside the shared `oauth` object.
-from .google_oauth import oauth, safe_next
+# One Authlib registry for the whole app, shared with Google sign-in.
+from .google_oauth import oauth
 
 # Pocket ID's default scopes already include the claims we want; overridable so
 # a deployment can ask for more without editing code.
@@ -62,6 +61,11 @@ if _ENABLED:
             # so PKCE is what stops a leaked authorization code from being
             # redeemed by anyone else; it is harmless for a confidential one.
             "code_challenge_method": "S256",
+            # Authlib would otherwise inherit httpx's 5s default. Discovery and
+            # the token exchange both go through here, so an explicit bound
+            # keeps a half-dead Pocket ID from pinning the request (and the
+            # operator's browser tab) indefinitely.
+            "timeout": 10.0,
         },
     )
 
