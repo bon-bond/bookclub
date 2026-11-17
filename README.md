@@ -377,8 +377,21 @@ Existing accounts keep their usernames and secrets, and Google stays switched
 off until you configure credentials.
 
 > If your database predates Alembic (created by `create_all()` rather than
-> migrations), stamp it before upgrading:
-> `DATABASE_URL=sqlite:///./data/coverbound.db alembic stamp 003`
+> migrations), stamp it before upgrading. Which stamp depends on how old the
+> database is — pick the newest schema the database already matches:
+>
+> ```bash
+> # v3.x database, i.e. everything through the 007 migrations but before
+> # Pocket ID sign-in was added (the usual case for this fork):
+> DATABASE_URL=sqlite:///./data/coverbound.db alembic stamp 007
+>
+> # older v1.x/v2.x database:
+> DATABASE_URL=sqlite:///./data/coverbound.db alembic stamp 003
+> ```
+>
+> Stamping too low re-runs migrations that already applied; stamping too high
+> skips them and leaves the schema short. `alembic current` afterwards should
+> report the stamp you chose.
 
 #### Four things to know before you upgrade
 
